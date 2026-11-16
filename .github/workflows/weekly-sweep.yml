@@ -1,0 +1,82 @@
+name: safenet-weekly-sweep
+
+on:
+  schedule:
+    # Every hour on every Tuesday UTC. The run exits in ~3 seconds with 0 gas
+    # when all Safes are dormant (idempotent), so hourly cadence is cheap.
+    - cron: '0 * * * 2'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Override DRY_RUN (true/false). Empty = use repo secret.'
+        required: false
+        type: boolean
+        default: true
+      override_fee_bps:
+        description: 'Override fee in basis points (0..10000) for manual testing. Empty = use config.'
+        required: false
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  group: safenet-reward-compounder
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Resolve DRY_RUN
+        id: dryrun
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" != "" ]; then
+            echo "value=${{ github.event.inputs.dry_run }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ secrets.DRY_RUN }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run rewards sweep
+        id: sweep
+        env:
+          RPC_URL: ${{ secrets.RPC_URL }}
+          EXECUTOR_PRIVATE_KEY: ${{ secrets.EXECUTOR_PRIVATE_KEY }}
+          DEFAULT_FEE_BPS: ${{ secrets.DEFAULT_FEE_BPS }}
+          CLIENT_SAFES_JSON: ${{ secrets.CLIENT_SAFES_JSON }}
+          OPERATOR_SAFE_JSON: ${{ secrets.OPERATOR_SAFE_JSON }}
+          MAX_GAS_PRICE_GWEI: ${{ secrets.MAX_GAS_PRICE_GWEI }}
+          DRY_RUN: ${{ steps.dryrun.outputs.value }}
+          OVERRIDE_FEE_BPS: ${{ github.event.inputs.override_fee_bps }}
+          LOG_LEVEL: info
+        run: node dist/index.js
+
+      - name: Parity guard — verify on-chain state matches expectations
+        if: always()
+        env:
+          RPC_URL: ${{ secrets.RPC_URL }}
+          CLIENT_SAFES_JSON: ${{ secrets.CLIENT_SAFES_JSON }}
+          OPERATOR_SAFE_JSON: ${{ secrets.OPERATOR_SAFE_JSON }}
+        run: node dist/parity-check.js
