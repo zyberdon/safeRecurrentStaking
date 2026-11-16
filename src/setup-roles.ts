@@ -34,7 +34,7 @@
 import 'dotenv/config';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { Interface, Wallet, getAddress } from 'ethers';
+import { Contract, Interface, JsonRpcProvider, Wallet, getAddress } from 'ethers';
 import { c, encodeKey, flattenCondition, processPermissions } from 'zodiac-roles-sdk';
 import {
   MERKLE_DROP_ADDRESS,
@@ -46,6 +46,12 @@ import {
 import { loadConfig } from './config.js';
 import { logger } from './logger.js';
 import type { ClientSafeConfig, OperatorSafeConfig } from './types.js';
+
+/** Safe v1.3.0 ABI (isModuleEnabled) for defensive module checks. */
+const SAFE_IFACE = new Interface(['function isModuleEnabled(address module) view returns (bool)']);
+
+/** How to handle the enableModule step. */
+export type EnableModuleMode = 'always' | 'skip' | 'auto';
 
 /** Roles Modifier v2 function signatures (verified against the singleton ABI). */
 const ROLES_IFACE = new Interface([
@@ -91,28 +97,72 @@ export interface SafeTxBuilderFile {
   }>;
 }
 
-/** Build the Roles Modifier permission calls for one Safe. */
-export function buildRoleCalls(
+/**
+ * Build the Roles Modifier permission calls for one Safe.
+ *
+ * `rolesModifier` is the DEPLOYED PROXY address for this Safe (from
+ * CLIENT_SAFES_JSON / OPERATOR_SAFE_JSON) — NOT the master-copy singleton
+ * 0xF2964CE6161ce0e75964Fe7927cE114cb0B283D5. All scoping calls
+ * (scopeTarget / scopeFunction / assignRoles) must target the proxy, because
+ * the singleton's owner is the deployer and calling it reverts with
+ * OwnableUnauthorizedAccount.
+ */
+export async function buildRoleCalls(
   safe: string,
+  rolesModifier: string,
   roleKey: string,
   executor: string,
   permissions: Parameters<typeof processPermissions>[0],
-): Array<{ to: string; value: string; data: string }> {
+  enableModuleMode: EnableModuleMode = 'always',
+  provider?: JsonRpcProvider,
+): Promise<Array<{ to: string; value: string; data: string }>> {
+  if (rolesModifier.toLowerCase() === ROLES_MODIFIER_V2_SINGLETON.toLowerCase()) {
+    throw new Error(
+      `rolesModifier for ${safe} is the master-copy singleton ${ROLES_MODIFIER_V2_SINGLETON}. ` +
+      'Provide the DEPLOYED proxy address for this Safe in CLIENT_SAFES_JSON / OPERATOR_SAFE_JSON.',
+    );
+  }
   const { targets } = processPermissions(permissions);
   const calls: Array<{ to: string; value: string; data: string }> = [];
 
-  // 1) Enable the Roles Modifier singleton as a module on the Safe.
-  calls.push({
-    to: safe,
-    value: '0',
-    data: ROLES_IFACE.encodeFunctionData('enableModule', [ROLES_MODIFIER_V2_SINGLETON]),
-  });
+  // 1) Enable the Safe's deployed Roles Modifier proxy as a module on the Safe
+  //    (unless the module is already enabled / the user opted to skip).
+  const needsEnable = async (): Promise<boolean> => {
+    if (enableModuleMode === 'skip') return false;
+    if (enableModuleMode === 'always') return true;
+    // 'auto'
+    if (!provider) {
+      logger.warn(`No provider for auto module check on ${safe}; defaulting to include enableModule`);
+      return true;
+    }
+    try {
+      const safeContract = new Contract(safe, SAFE_IFACE, provider);
+      const enabled = await safeContract.isModuleEnabled!(rolesModifier);
+      if (enabled) {
+        logger.info(`Module ${rolesModifier} already enabled on ${safe}; omitting enableModule`);
+        return false;
+      }
+      logger.info(`Module ${rolesModifier} not enabled on ${safe}; including enableModule`);
+      return true;
+    } catch (err) {
+      logger.warn(`isModuleEnabled check failed for ${safe}: ${(err as Error).message}; including enableModule`);
+      return true;
+    }
+  };
 
-  // 2) Scope each target: target-level (delegatecall) or function-level.
+  if (await needsEnable()) {
+    calls.push({
+      to: safe,
+      value: '0',
+      data: ROLES_IFACE.encodeFunctionData('enableModule', [rolesModifier]),
+    });
+  }
+
+  // 2) Scope each target on the Safe's proxy: target-level (delegatecall) or function-level.
   for (const target of targets) {
     if (target.clearance === 1 /* Target */) {
       calls.push({
-        to: ROLES_MODIFIER_V2_SINGLETON,
+        to: rolesModifier,
         value: '0',
         data: ROLES_IFACE.encodeFunctionData('scopeTarget', [roleKey, target.address]),
       });
@@ -120,7 +170,7 @@ export function buildRoleCalls(
       for (const fn of target.functions) {
         const conditions = fn.condition ? flattenCondition(fn.condition) : [];
         calls.push({
-          to: ROLES_MODIFIER_V2_SINGLETON,
+          to: rolesModifier,
           value: '0',
           data: ROLES_IFACE.encodeFunctionData('scopeFunction', [
             roleKey,
@@ -140,11 +190,16 @@ export function buildRoleCalls(
   }
 
   // 3) Add the executor EOA as a member of the role.
+  //    assignRoles(address module, ...) takes the MODULE/MEMBER address — the
+  //    executor EOA (which calls execTransactionWithRole directly and is
+  //    authenticated as a module). Passing the modifier proxy here would grant
+  //    membership to the proxy itself and can trigger module re-registration
+  //    conflicts (e.g. Safe GS102).
   calls.push({
-    to: ROLES_MODIFIER_V2_SINGLETON,
+    to: rolesModifier,
     value: '0',
     data: ROLES_IFACE.encodeFunctionData('assignRoles', [
-      ROLES_MODIFIER_V2_SINGLETON,
+      executor,
       [roleKey],
       [true],
     ]),
@@ -244,6 +299,8 @@ export async function generateRoleFiles(
   config: ReturnType<typeof loadConfig>,
   outDir: string,
   roleKeyLabel: string,
+  enableModuleMode: EnableModuleMode = 'always',
+  provider?: JsonRpcProvider,
 ): Promise<string[]> {
   const roleKey = encodeKey(roleKeyLabel);
   const derivedExecutor = new Wallet(config.executorPrivateKey).address;
@@ -256,7 +313,15 @@ export async function generateRoleFiles(
   const files: string[] = [];
 
   for (const client of config.clientSafes) {
-    const calls = buildRoleCalls(client.safe, roleKey, executor, buildClientPermissions(client, config.operatorSafe.safe));
+    const calls = await buildRoleCalls(
+      client.safe,
+      client.rolesModifier,
+      roleKey,
+      executor,
+      buildClientPermissions(client, config.operatorSafe.safe),
+      enableModuleMode,
+      provider,
+    );
     const file = toSafeTxBuilderFile(
       client.safe,
       executor,
@@ -270,11 +335,14 @@ export async function generateRoleFiles(
     logger.info(`Wrote ${path} (${calls.length} calls)`);
   }
 
-  const opCalls = buildRoleCalls(
+  const opCalls = await buildRoleCalls(
     config.operatorSafe.safe,
+    config.operatorSafe.rolesModifier,
     roleKey,
     executor,
     buildOperatorPermissions(config.operatorSafe),
+    enableModuleMode,
+    provider,
   );
   const opFile = toSafeTxBuilderFile(
     config.operatorSafe.safe,
@@ -299,11 +367,20 @@ if (isMain) {
   const outDir = outFlag >= 0 && args[outFlag + 1] ? resolve(args[outFlag + 1]!) : resolve('roles');
   const keyFlag = args.indexOf('--role-key');
   const roleKeyLabel = keyFlag >= 0 && args[keyFlag + 1] ? args[keyFlag + 1]! : 'safenet-rewards';
+  const enableFlag = args.indexOf('--enable-module');
+  const enableModuleMode: EnableModuleMode =
+    enableFlag >= 0 && args[enableFlag + 1]
+      ? (args[enableFlag + 1] as EnableModuleMode)
+      : 'auto';
 
   try {
     mkdirSync(outDir, { recursive: true });
     const config = loadConfig();
-    const files = await generateRoleFiles(config, outDir, roleKeyLabel);
+    let provider: JsonRpcProvider | undefined;
+    if (enableModuleMode === 'auto') {
+      provider = new JsonRpcProvider(config.rpcUrl, 1, { staticNetwork: true });
+    }
+    const files = await generateRoleFiles(config, outDir, roleKeyLabel, enableModuleMode, provider);
     logger.info(`Generated ${files.length} Safe Transaction Builder file(s) in ${outDir}`);
     logger.info('Import each file into https://app.safe.global (Transaction Builder) and execute.');
   } catch (err) {

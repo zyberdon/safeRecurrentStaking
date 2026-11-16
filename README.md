@@ -86,6 +86,11 @@ npm run build
 node dist/setup-roles.js --out roles --role-key safenet-rewards
 ```
 
+The `--enable-module` flag controls the `enableModule` step (default `auto`):
+- `auto` — queries `Safe.isModuleEnabled()` on-chain (via `RPC_URL`) and omits `enableModule` when the Roles Modifier proxy is already enabled on that Safe; includes it otherwise. Prevents redundant re-enable calls for Safes that already have the module.
+- `always` — always emit `enableModule` (idempotent on Safe; re-enabling an already-enabled module is a no-op).
+- `skip` — never emit `enableModule` (use when the module is already enabled on every Safe).
+
 This reads `CLIENT_SAFES_JSON` / `OPERATOR_SAFE_JSON` / `EXECUTOR_PRIVATE_KEY` from the environment and writes one JSON file per Safe:
 
 - **Client Safes** — grants `roleKey` permission to delegate-call `MultiSendCallOnly` and call:
@@ -98,6 +103,10 @@ This reads `CLIENT_SAFES_JSON` / `OPERATOR_SAFE_JSON` / `EXECUTOR_PRIVATE_KEY` f
 Staking permissions are included in the initial setup **even when `DEFAULT_FEE_BPS=10000`** so changing the fee percentage later requires zero on-chain re-signing.
 
 Import each generated JSON into the [Safe Transaction Builder](https://app.safe.global) and execute with the Safe owners. The executor EOA is added as a role member (`assignRoles`) in the same batch.
+
+> **Important — proxy vs singleton:** the `rolesModifier` value in `CLIENT_SAFES_JSON` / `OPERATOR_SAFE_JSON` must be the **deployed Roles Modifier proxy address** for that specific Safe (the module instance enabled on the Safe), **not** the master-copy singleton `0xF2964CE6161ce0e75964Fe7927cE114cb0B283D5`. All scoping calls (`scopeTarget`, `scopeFunction`, `assignRoles`) target that proxy; calling them on the singleton reverts with `OwnableUnauthorizedAccount` because the singleton's owner is the deployer, not the Safe. `setup-roles.ts` fails fast if you pass the singleton.
+
+> **assignRoles member:** the first argument of `assignRoles` is the **executor EOA** (the module/member that calls `execTransactionWithRole`), not the modifier proxy. Passing the proxy would grant membership to the proxy itself and can trigger module re-registration conflicts (e.g. Safe `GS102`).
 
 ## Setup
 
