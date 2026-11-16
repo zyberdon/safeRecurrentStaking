@@ -246,7 +246,13 @@ export async function generateRoleFiles(
   roleKeyLabel: string,
 ): Promise<string[]> {
   const roleKey = encodeKey(roleKeyLabel);
-  const executor = new Wallet(config.executorPrivateKey).address;
+  const derivedExecutor = new Wallet(config.executorPrivateKey).address;
+  const executor = config.executorAddress ?? derivedExecutor;
+  if (config.executorAddress && config.executorAddress.toLowerCase() !== derivedExecutor.toLowerCase()) {
+    throw new Error(
+      `EXECUTOR_ADDRESS ${config.executorAddress} does not match the address derived from EXECUTOR_PRIVATE_KEY (${derivedExecutor})`,
+    );
+  }
   const files: string[] = [];
 
   for (const client of config.clientSafes) {

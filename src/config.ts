@@ -18,6 +18,8 @@ import type { ClientSafeConfig, OperatorSafeConfig } from './types.js';
 export interface AppConfig {
   rpcUrl: string;
   executorPrivateKey: string;
+  /** Optional explicit executor address; when set, setup-roles verifies it matches the private key. */
+  executorAddress?: string;
   defaultFeeBps: number;
   /** Optional global override (workflow_dispatch manual testing); beats per-Safe feeBps. */
   overrideFeeBps?: number;
@@ -151,6 +153,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new ConfigError('EXECUTOR_PRIVATE_KEY must be a 32-byte hex string');
   }
 
+  const executorAddressRaw = env.EXECUTOR_ADDRESS;
+  if (executorAddressRaw !== undefined && executorAddressRaw.trim() !== '') {
+    if (!isAddress(executorAddressRaw)) {
+      throw new ConfigError(`EXECUTOR_ADDRESS is not a valid address: ${executorAddressRaw}`);
+    }
+  }
+
   const defaultFeeBpsRaw = env.DEFAULT_FEE_BPS ?? '2500';
   const defaultFeeBps = Number(defaultFeeBpsRaw);
   if (!Number.isInteger(defaultFeeBps) || defaultFeeBps < 0 || defaultFeeBps > 10000) {
@@ -160,6 +169,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     rpcUrl,
     executorPrivateKey,
+    executorAddress:
+      executorAddressRaw !== undefined && executorAddressRaw.trim() !== ''
+        ? executorAddressRaw
+        : undefined,
     defaultFeeBps,
     overrideFeeBps: parseOverrideFeeBps(env.OVERRIDE_FEE_BPS),
     clientSafes: parseClientSafes(requireEnv('CLIENT_SAFES_JSON')),
