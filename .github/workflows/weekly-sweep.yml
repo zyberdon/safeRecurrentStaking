@@ -62,11 +62,11 @@ jobs:
       - name: Run rewards sweep
         id: sweep
         env:
-          RPC_URL: ${{ secrets.RPC_URL }}
+          RPC_URL: ${{ vars.RPC_URL }}
           EXECUTOR_PRIVATE_KEY: ${{ secrets.EXECUTOR_PRIVATE_KEY }}
           DEFAULT_FEE_BPS: ${{ secrets.DEFAULT_FEE_BPS }}
-          CLIENT_SAFES_JSON: ${{ secrets.CLIENT_SAFES_JSON }}
-          OPERATOR_SAFE_JSON: ${{ secrets.OPERATOR_SAFE_JSON }}
+          CLIENT_SAFES_JSON: ${{ vars.CLIENT_SAFES_JSON }}
+          OPERATOR_SAFE_JSON: ${{ vars.OPERATOR_SAFE_JSON }}
           MAX_GAS_PRICE_GWEI: ${{ secrets.MAX_GAS_PRICE_GWEI }}
           DRY_RUN: ${{ steps.dryrun.outputs.value }}
           OVERRIDE_FEE_BPS: ${{ github.event.inputs.override_fee_bps }}
@@ -76,7 +76,8 @@ jobs:
       - name: Parity guard — verify on-chain state matches expectations
         if: always()
         env:
-          RPC_URL: ${{ secrets.RPC_URL }}
-          CLIENT_SAFES_JSON: ${{ secrets.CLIENT_SAFES_JSON }}
-          OPERATOR_SAFE_JSON: ${{ secrets.OPERATOR_SAFE_JSON }}
+          RPC_URL: ${{ vars.RPC_URL }}
+          EXECUTOR_PRIVATE_KEY: ${{ secrets.EXECUTOR_PRIVATE_KEY }}
+          CLIENT_SAFES_JSON: ${{ vars.CLIENT_SAFES_JSON }}
+          OPERATOR_SAFE_JSON: ${{ vars.OPERATOR_SAFE_JSON }}
         run: node dist/parity-check.js
