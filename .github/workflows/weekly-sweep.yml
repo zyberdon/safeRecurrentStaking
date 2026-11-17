@@ -3,7 +3,7 @@ name: safenet-weekly-sweep
 on:
   schedule:
     # Every hour on Tuesdays and Wednesdays UTC, offset from the top of the hour
-    - cron: '0 * * * 2,3'
+    - cron: '55 * * * 2,3'
   workflow_dispatch:
     inputs:
       dry_run:
