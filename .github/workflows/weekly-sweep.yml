@@ -2,9 +2,10 @@ name: safenet-weekly-sweep
 
 on:
   schedule:
-    # Every hour on every Tuesday UTC. The run exits in ~3 seconds with 0 gas
-    # when all Safes are dormant (idempotent), so hourly cadence is cheap.
-    - cron: '0 * * * 2'
+    # Every 15 minutes on Tuesdays and Wednesdays UTC. The run exits in ~3
+    # seconds with 0 gas when all Safes are dormant (idempotent), so frequent
+    # cadence is cheap.
+    - cron: '*/15 * * * 2,3'
   workflow_dispatch:
     inputs:
       dry_run:
