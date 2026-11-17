@@ -19,7 +19,9 @@ import { logger } from './logger.js';
 import { fetchRewardProof } from './proof.js';
 
 export async function parityCheck(): Promise<void> {
-  const config = loadConfig();
+  // Parity checking is read-only: it verifies on-chain state and never signs,
+  // so it must not require EXECUTOR_PRIVATE_KEY.
+  const config = loadConfig(undefined, { skipExecutorKey: true });
   const provider = new JsonRpcProvider(config.rpcUrl, 1, { staticNetwork: true });
   const drop = new Contract(MERKLE_DROP_ADDRESS, MERKLE_DROP_ABI, provider);
   const token = new Contract(SAFE_TOKEN_ADDRESS, SAFE_TOKEN_ABI, provider);

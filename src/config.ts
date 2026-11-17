@@ -141,15 +141,25 @@ function parseOverrideFeeBps(raw: string | undefined): number | undefined {
   return v;
 }
 
+export interface LoadConfigOptions {
+  /** Set true for read-only tools (parity-check) that don't sign transactions. */
+  skipExecutorKey?: boolean;
+}
+
 /** Load and validate configuration from process.env. */
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+export function loadConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  options: LoadConfigOptions = {},
+): AppConfig {
   const rpcUrl = requireEnv('RPC_URL');
   if (!/^https?:\/\//.test(rpcUrl)) {
     throw new ConfigError(`RPC_URL must be an http(s) URL, got ${rpcUrl}`);
   }
 
-  const executorPrivateKey = requireEnv('EXECUTOR_PRIVATE_KEY');
-  if (!isHexString(executorPrivateKey, 32)) {
+  const executorPrivateKey = options.skipExecutorKey
+    ? (env.EXECUTOR_PRIVATE_KEY?.trim() ?? '')
+    : requireEnv('EXECUTOR_PRIVATE_KEY');
+  if (executorPrivateKey !== '' && !isHexString(executorPrivateKey, 32)) {
     throw new ConfigError('EXECUTOR_PRIVATE_KEY must be a 32-byte hex string');
   }
 
