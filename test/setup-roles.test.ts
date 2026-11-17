@@ -5,6 +5,8 @@ import { Interface } from 'ethers';
 import {
   MERKLE_DROP_ADDRESS,
   MULTI_SEND_CALL_ONLY_ADDRESS,
+  MULTI_SEND_SELECTOR,
+  MULTI_SEND_UNWRAPPER_ADDRESS,
   ROLES_MODIFIER_V2_SINGLETON,
   SAFE_TOKEN_ADDRESS,
   STAKING_CONTRACT_ADDRESS,
@@ -12,7 +14,12 @@ import {
 
 const ROLES_IFACE = new Interface([
   'function assignRoles(address module, bytes32[] roleKeys, bool[] memberOf)',
+  'function allowTarget(bytes32 roleKey, address targetAddress, uint8 options)',
+  'function setTransactionUnwrapper(address to, bytes4 selector, address adapter)',
 ]);
+
+const ALLOW_TARGET_SELECTOR = '0x7b0da5b2';
+const SET_UNWRAPPER_SELECTOR = '0x2916a9af';
 
 const CLIENT = {
   safe: '0x03d4969997a6f6cf8b8695c33087aa175a8463d6',
@@ -94,6 +101,24 @@ describe('setup-roles permissions', () => {
       expect(call.to.toLowerCase()).not.toBe(ROLES_MODIFIER_V2_SINGLETON.toLowerCase());
     }
 
+    // allowTarget must target MultiSendCallOnly with options == 2 (DelegateCall).
+    const allowMs = calls.find((c) => c.data.startsWith(ALLOW_TARGET_SELECTOR))!;
+    expect(allowMs).toBeTruthy();
+    expect(allowMs.to.toLowerCase()).toBe(CLIENT.rolesModifier.toLowerCase());
+    const allowDecoded = ROLES_IFACE.decodeFunctionData('allowTarget', allowMs.data);
+    expect(allowDecoded.targetAddress.toLowerCase()).toBe(MULTI_SEND_CALL_ONLY_ADDRESS.toLowerCase());
+    expect(Number(allowDecoded.options)).toBe(2); // DelegateCall
+
+    // setTransactionUnwrapper must register the official MultiSendUnwrapper
+    // for MultiSendCallOnly + the multiSend(bytes) selector.
+    const setUnw = calls.find((c) => c.data.startsWith(SET_UNWRAPPER_SELECTOR))!;
+    expect(setUnw).toBeTruthy();
+    expect(setUnw.to.toLowerCase()).toBe(CLIENT.rolesModifier.toLowerCase());
+    const unwDecoded = ROLES_IFACE.decodeFunctionData('setTransactionUnwrapper', setUnw.data);
+    expect(unwDecoded.to.toLowerCase()).toBe(MULTI_SEND_CALL_ONLY_ADDRESS.toLowerCase());
+    expect(unwDecoded.selector.toLowerCase()).toBe(MULTI_SEND_SELECTOR.toLowerCase());
+    expect(unwDecoded.adapter.toLowerCase()).toBe(MULTI_SEND_UNWRAPPER_ADDRESS.toLowerCase());
+
     // assignRoles must grant membership to the EXECUTOR, not the proxy.
     const assign = calls.find((c) => c.data.startsWith('0x957ed2b3'))!;
     expect(assign.to.toLowerCase()).toBe(CLIENT.rolesModifier.toLowerCase());
@@ -130,7 +155,8 @@ describe('setup-roles permissions', () => {
       'skip',
     );
     expect(calls.some((c) => c.data.startsWith('0x610b5925'))).toBe(false);
-    expect(calls[0]!.data.slice(0, 10)).toBe('0x0c6c76b8'); // scopeTarget first
+    // First call is allowTarget for MultiSendCallOnly (delegatecall entry point).
+    expect(calls[0]!.data.slice(0, 10)).toBe(ALLOW_TARGET_SELECTOR);
   });
 
   it('includes enableModule in always mode', async () => {
