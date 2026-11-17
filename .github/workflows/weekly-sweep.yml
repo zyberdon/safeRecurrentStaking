@@ -62,7 +62,7 @@ jobs:
       - name: Run rewards sweep
         id: sweep
         env:
-          RPC_URL: ${{ vars.RPC_URL }}
+          RPC_URL: ${{ secrets.RPC_URL }}
           EXECUTOR_PRIVATE_KEY: ${{ secrets.EXECUTOR_PRIVATE_KEY }}
           DEFAULT_FEE_BPS: ${{ secrets.DEFAULT_FEE_BPS }}
           CLIENT_SAFES_JSON: ${{ vars.CLIENT_SAFES_JSON }}

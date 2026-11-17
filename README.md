@@ -76,6 +76,7 @@ Before any transaction is built:
 | CumulativeMerkleDrop (rewards) | `0xe5139Fc0FB8eae81e30d8a85C22E88c6757120f2` |
 | Safe MultiSendCallOnly v1.3.0 | `0x40A2aCCbd92BCA938b02010E17A5b8929b49130D` |
 | Zodiac Roles Modifier v2 | `0xF2964CE6161ce0e75964Fe7927cE114cb0B283D5` |
+| Roles `MultiSendUnwrapper` (adapter) | `0xB4Cd4bb764C089f20DA18700CE8bc5e49F369efD` |
 
 ## One-time setup: Zodiac Roles permissions
 
@@ -107,6 +108,8 @@ Import each generated JSON into the [Safe Transaction Builder](https://app.safe.
 > **Important — proxy vs singleton:** the `rolesModifier` value in `CLIENT_SAFES_JSON` / `OPERATOR_SAFE_JSON` must be the **deployed Roles Modifier proxy address** for that specific Safe (the module instance enabled on the Safe), **not** the master-copy singleton `0xF2964CE6161ce0e75964Fe7927cE114cb0B283D5`. All scoping calls (`scopeTarget`, `scopeFunction`, `assignRoles`) target that proxy; calling them on the singleton reverts with `OwnableUnauthorizedAccount` because the singleton's owner is the deployer, not the Safe. `setup-roles.ts` fails fast if you pass the singleton.
 
 > **assignRoles member:** the first argument of `assignRoles` is the **executor EOA** (the module/member that calls `execTransactionWithRole`), not the modifier proxy. Passing the proxy would grant membership to the proxy itself and can trigger module re-registration conflicts (e.g. Safe `GS102`).
+
+> **MultiSend unwrapping & delegatecall:** the generated setup registers the official Roles `MultiSendUnwrapper` (`setTransactionUnwrapper(MultiSendCallOnly, 0x8d80ff0a, 0xB4Cd4bb764C089f20DA18700CE8bc5e49F369efD)`) and grants `MultiSendCallOnly` via `allowTarget(..., options=2 /* DelegateCall */)`. The sweep executes the MultiSend batch through `execTransactionWithRole(..., OPERATION_DELEGATE_CALL)` so the Roles modifier unwraps the batch and checks permissions on each inner `{claim, transfer, approve, stake}` call instead of treating the blob as a black box.
 
 ## Setup
 

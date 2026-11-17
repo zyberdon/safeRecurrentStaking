@@ -181,3 +181,63 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     dryRun: parseDryRun(env.DRY_RUN),
   };
 }
+
+/**
+ * Format local .env values for copy-paste into GitHub Actions.
+ *
+ * Splits the config into two buckets matching the workflow's expectations:
+ *   - Repository Variables (non-sensitive): CLIENT_SAFES_JSON, OPERATOR_SAFE_JSON
+ *   - Secrets (sensitive): RPC_URL, DEFAULT_FEE_BPS, MAX_GAS_PRICE_GWEI
+ *
+ * The JSON values are emitted as single-line compact JSON (GitHub Variables
+ * and Secrets must be single-line; newlines break the env injection).
+ */
+export function formatGithubConfig(env: NodeJS.ProcessEnv = process.env): string {
+  const clientSafesRaw = env.CLIENT_SAFES_JSON?.trim();
+  const operatorSafeRaw = env.OPERATOR_SAFE_JSON?.trim();
+
+  // Validate before printing so we never hand you broken JSON.
+  if (clientSafesRaw) parseClientSafes(clientSafesRaw);
+  if (operatorSafeRaw) parseOperatorSafe(operatorSafeRaw);
+
+  const compact = (raw: string | undefined): string => {
+    if (!raw) return '';
+    try {
+      return JSON.stringify(JSON.parse(raw));
+    } catch {
+      return raw;
+    }
+  };
+
+  const lines: string[] = [];
+  lines.push('============================================================');
+  lines.push('GitHub REPOSITORY VARIABLES  (Settings -> Secrets and variables -> Actions -> Variables)');
+  lines.push('============================================================');
+  lines.push(`CLIENT_SAFES_JSON=${compact(clientSafesRaw)}`);
+  lines.push(`OPERATOR_SAFE_JSON=${compact(operatorSafeRaw)}`);
+  lines.push('');
+  lines.push('============================================================');
+  lines.push('GitHub SECRETS  (Settings -> Secrets and variables -> Actions -> Secrets)');
+  lines.push('============================================================');
+  lines.push(`RPC_URL=${env.RPC_URL?.trim() ?? ''}`);
+  lines.push(`DEFAULT_FEE_BPS=${env.DEFAULT_FEE_BPS?.trim() ?? '2500'}`);
+  lines.push(`MAX_GAS_PRICE_GWEI=${env.MAX_GAS_PRICE_GWEI?.trim() ?? String(DEFAULT_MAX_GAS_PRICE_GWEI)}`);
+  lines.push('');
+  lines.push('NOTE: EXECUTOR_PRIVATE_KEY and DRY_RUN are intentionally NOT printed here.');
+  lines.push('      Add EXECUTOR_PRIVATE_KEY as a Secret manually (never log it).');
+  lines.push('      DRY_RUN can be a Secret or left unset (defaults to true).');
+  return lines.join('\n');
+}
+
+// CLI entry point: `node dist/config.js` prints the formatted block.
+const isMain = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
+if (isMain) {
+  try {
+    // Load local .env so the formatter reflects your real values.
+    await import('dotenv/config');
+    process.stdout.write(formatGithubConfig() + '\n');
+  } catch (err) {
+    process.stderr.write(`Failed to format config: ${(err as Error).message}\n`);
+    process.exit(1);
+  }
+}
