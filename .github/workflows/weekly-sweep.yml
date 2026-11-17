@@ -74,10 +74,11 @@ jobs:
         run: node dist/index.js
 
       - name: Parity guard — verify on-chain state matches expectations
-        if: always()
+        # Only run when the sweep executed successfully; a failed sweep means
+        # dist/ may not exist (Build step failed) and there is nothing to verify.
+        if: success()
         env:
-          RPC_URL: ${{ vars.RPC_URL }}
-          EXECUTOR_PRIVATE_KEY: ${{ secrets.EXECUTOR_PRIVATE_KEY }}
+          RPC_URL: ${{ secrets.RPC_URL }}
           CLIENT_SAFES_JSON: ${{ vars.CLIENT_SAFES_JSON }}
           OPERATOR_SAFE_JSON: ${{ vars.OPERATOR_SAFE_JSON }}
         run: node dist/parity-check.js
