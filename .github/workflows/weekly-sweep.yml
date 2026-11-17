@@ -5,7 +5,7 @@ on:
     # Every 15 minutes on Tuesdays and Wednesdays UTC. The run exits in ~3
     # seconds with 0 gas when all Safes are dormant (idempotent), so frequent
     # cadence is cheap.
-    - cron: '*/15 * * * 2,3'
+    - cron: '7,22,37,52 * * * 2,3'
   workflow_dispatch:
     inputs:
       dry_run:
