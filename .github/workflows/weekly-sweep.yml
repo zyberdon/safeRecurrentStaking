@@ -2,8 +2,7 @@ name: safenet-weekly-sweep
 
 on:
   schedule:
-    # Every hour on Tuesdays and Wednesdays UTC. The run exits in ~3 seconds
-    # with 0 gas when all Safes are dormant (idempotent), so the cadence is cheap.
+    # Every hour on Tuesdays and Wednesdays UTC, offset from the top of the hour
     - cron: '0 * * * 2,3'
   workflow_dispatch:
     inputs:
@@ -28,6 +27,7 @@ jobs:
   sweep:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -73,9 +73,7 @@ jobs:
           LOG_LEVEL: info
         run: node dist/index.js
 
-      - name: Parity guard — verify on-chain state matches expectations
-        # Only run when the sweep executed successfully; a failed sweep means
-        # dist/ may not exist (Build step failed) and there is nothing to verify.
+      - name: Parity guard - verify on-chain state matches expectations
         if: success()
         env:
           RPC_URL: ${{ secrets.RPC_URL }}
