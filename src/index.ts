@@ -22,7 +22,7 @@ import {
   SAFE_TOKEN_ADDRESS,
   STAKING_CONTRACT_ADDRESS,
   BPS_DENOMINATOR,
-  OPERATION_CALL,
+  OPERATION_DELEGATE_CALL,
 } from './constants.js';
 import { MERKLE_DROP_ABI, MULTI_SEND_CALL_ONLY_ABI, ROLES_MODIFIER_ABI, SAFE_TOKEN_ABI, STAKING_ABI } from './abi.js';
 import { loadConfig } from './config.js';
@@ -141,7 +141,7 @@ export async function simulateExecution(
       MULTI_SEND_CALL_ONLY_ADDRESS,
       0n,
       encodedMultiSend,
-      OPERATION_CALL,
+      OPERATION_DELEGATE_CALL,
       roleKey,
       true,
     );
@@ -163,7 +163,7 @@ export async function broadcastExecution(
     MULTI_SEND_CALL_ONLY_ADDRESS,
     0n,
     encodedMultiSend,
-    OPERATION_CALL,
+    OPERATION_DELEGATE_CALL,
     roleKey,
     true,
   );

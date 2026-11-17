@@ -11,6 +11,17 @@ export const MERKLE_DROP_ADDRESS = '0xe5139Fc0FB8eae81e30d8a85C22E88c6757120f2';
 export const MULTI_SEND_CALL_ONLY_ADDRESS = '0x40A2aCCbd92BCA938b02010E17A5b8929b49130D';
 export const ROLES_MODIFIER_V2_SINGLETON = '0xF2964CE6161ce0e75964Fe7927cE114cb0B283D5';
 
+/** MultiSendCallOnly.multiSend(bytes) selector. */
+export const MULTI_SEND_SELECTOR = '0x8d80ff0a';
+
+/**
+ * Official Zodiac Roles `MultiSendUnwrapper` adapter (mainnet).
+ * Registered via setTransactionUnwrapper(MultiSendCallOnly, multiSend.selector, this)
+ * so the Roles modifier unpacks a MultiSend batch and checks each inner call
+ * against the role instead of treating the batch as a black box.
+ */
+export const MULTI_SEND_UNWRAPPER_ADDRESS = '0xB4Cd4bb764C089f20DA18700CE8bc5e49F369efD';
+
 /** ENS name that points (via contenthash) at the canonical IPFS rewards distribution. */
 export const REWARDS_ENS_NAME = 'rewards.safenet-gov.eth';
 

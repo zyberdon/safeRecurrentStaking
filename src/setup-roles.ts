@@ -39,6 +39,8 @@ import { c, encodeKey, flattenCondition, processPermissions } from 'zodiac-roles
 import {
   MERKLE_DROP_ADDRESS,
   MULTI_SEND_CALL_ONLY_ADDRESS,
+  MULTI_SEND_SELECTOR,
+  MULTI_SEND_UNWRAPPER_ADDRESS,
   ROLES_MODIFIER_V2_SINGLETON,
   SAFE_TOKEN_ADDRESS,
   STAKING_CONTRACT_ADDRESS,
@@ -56,12 +58,11 @@ export type EnableModuleMode = 'always' | 'skip' | 'auto';
 /** Roles Modifier v2 function signatures (verified against the singleton ABI). */
 const ROLES_IFACE = new Interface([
   'function enableModule(address module)',
-  'function scopeTarget(bytes32 roleKey, address targetAddress)',
+  'function allowTarget(bytes32 roleKey, address targetAddress, uint8 options)',
   'function scopeFunction(bytes32 roleKey, address targetAddress, bytes4 selector, tuple(uint8 parent, uint8 paramType, uint8 operator, bytes compValue)[] conditions, uint8 options)',
   'function assignRoles(address module, bytes32[] roleKeys, bool[] memberOf)',
+  'function setTransactionUnwrapper(address to, bytes4 selector, address adapter)',
 ]);
-
-const MULTI_SEND_IFACE = new Interface(['function multiSend(bytes transactions)']);
 
 const MERKLE_DROP_IFACE = new Interface([
   'function claim(address account, uint256 cumulativeAmount, bytes32 expectedMerkleRoot, bytes32[] merkleProof)',
@@ -158,13 +159,21 @@ export async function buildRoleCalls(
     });
   }
 
-  // 2) Scope each target on the Safe's proxy: target-level (delegatecall) or function-level.
+  // 2) Allow/scope each target on the Safe's proxy.
+  //    - Target-level (clearance === 1): allowTarget(roleKey, target, executionOptions).
+  //      For MultiSendCallOnly this sets executionOptions = DelegateCall (2) so the
+  //      batch entry point is delegate-called.
+  //    - Function-level (clearance === 2): scopeFunction(...) per function.
   for (const target of targets) {
     if (target.clearance === 1 /* Target */) {
       calls.push({
         to: rolesModifier,
         value: '0',
-        data: ROLES_IFACE.encodeFunctionData('scopeTarget', [roleKey, target.address]),
+        data: ROLES_IFACE.encodeFunctionData('allowTarget', [
+          roleKey,
+          target.address,
+          target.executionOptions,
+        ]),
       });
     } else {
       for (const fn of target.functions) {
@@ -188,6 +197,19 @@ export async function buildRoleCalls(
       }
     }
   }
+
+  // 2b) Register the official MultiSendUnwrapper so the Roles modifier unpacks a
+  //     MultiSend batch and checks permissions on each inner call, rather than
+  //     treating the batch blob as a black box.
+  calls.push({
+    to: rolesModifier,
+    value: '0',
+    data: ROLES_IFACE.encodeFunctionData('setTransactionUnwrapper', [
+      MULTI_SEND_CALL_ONLY_ADDRESS,
+      MULTI_SEND_SELECTOR,
+      MULTI_SEND_UNWRAPPER_ADDRESS,
+    ]),
+  });
 
   // 3) Add the executor EOA as a member of the role.
   //    assignRoles(address module, ...) takes the MODULE/MEMBER address — the
