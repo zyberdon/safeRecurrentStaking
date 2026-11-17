@@ -1,4 +1,4 @@
-name: safenet-weekly-sweep
+name: safenet-weekly-reward-sweep
 
 on:
   schedule:
