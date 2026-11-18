@@ -267,7 +267,8 @@ export async function processClientSafes(
         continue;
       }
 
-      const sim = await simulateExecution(client.rolesModifier, client.roleKey, encoded, wallet); if (!sim.ok) {
+      const sim = await simulateExecution(client.rolesModifier, client.roleKey, encoded, provider);
+      if (!sim.ok) {
         logger.error(`Simulation failed for ${client.safe}: ${sim.reason}`);
         outcomes.push({ status: 'failed', reason: `simulation: ${sim.reason}` });
         continue;
@@ -366,7 +367,7 @@ export async function processOperatorSafe(
 
     // 7) Simulate, broadcast, await tx.wait(1).
     const encoded = encodeMultiSendBatch(calls);
-    const sim = await simulateExecution(operator.rolesModifier, operator.roleKey, encoded, wallet);
+    const sim = await simulateExecution(operator.rolesModifier, operator.roleKey, encoded, provider);
     if (!sim.ok) {
       logger.error(`Simulation failed for operator ${operator.safe}: ${sim.reason}`);
       return { status: 'failed', reason: `simulation: ${sim.reason}` };
