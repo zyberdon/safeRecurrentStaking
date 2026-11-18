@@ -26,3 +26,39 @@ describe('buildOperatorCalls', () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+import { checkRoleConfigured } from '../src/index.js';
+import { JsonRpcProvider } from 'ethers';
+
+describe('checkRoleConfigured', () => {
+  it('reports missing targets when role storage is empty', async () => {
+    // Mock provider: getStorage returns zero for every slot.
+    const provider = {
+      getStorage: async () => '0x' + '00'.repeat(32),
+    } as unknown as JsonRpcProvider;
+    const r = await checkRoleConfigured(
+      '0x1111111111111111111111111111111111111111',
+      '0x' + '11'.repeat(32),
+      provider,
+      ['0x40A2aCCbd92BCA938b02010E17A5b8929b49130D', '0xe5139Fc0FB8eae81e30d8a85C22E88c6757120f2'],
+    );
+    expect(r.ok).toBe(false);
+    expect(r.missing).toHaveLength(2);
+    expect(r.found).toHaveLength(0);
+  });
+
+  it('reports found targets when role storage is populated', async () => {
+    const provider = {
+      getStorage: async () => '0x' + '00'.repeat(31) + '01', // clearance=1, options=0
+    } as unknown as JsonRpcProvider;
+    const r = await checkRoleConfigured(
+      '0x1111111111111111111111111111111111111111',
+      '0x' + '11'.repeat(32),
+      provider,
+      ['0x40A2aCCbd92BCA938b02010E17A5b8929b49130D'],
+    );
+    expect(r.ok).toBe(true);
+    expect(r.found).toHaveLength(1);
+    expect(r.missing).toHaveLength(0);
+  });
+});

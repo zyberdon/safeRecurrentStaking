@@ -151,6 +151,48 @@ export async function simulateExecution(
   }
 }
 
+/**
+ * Pre-flight role configuration check.
+ *
+ * Reads the Roles Modifier v2 role storage on-chain and verifies the role has
+ * at least one target configured. A role with the executor as a member but no
+ * targets (allowTarget/scopeFunction never applied) causes execTransactionWithRole
+ * to revert with NotAuthorized — this surfaces that clearly instead of the
+ * cryptic revert.
+ *
+ * Storage layout (verified against the v2 source):
+ *   roles mapping at slot 4; Role struct = { members, targets, scopeConfig }
+ *   targets[addr] = keccak256(addr . keccak256(roleKey . slot5))
+ *   TargetAddress = { uint8 clearance; uint8 options } packed in one word.
+ */
+export async function checkRoleConfigured(
+  rolesModifier: string,
+  roleKey: string,
+  provider: JsonRpcProvider,
+  expectedTargets: string[],
+): Promise<{ ok: boolean; missing: string[]; found: string[] }> {
+  const { keccak256, concat, toBeHex, zeroPadValue, getAddress } = await import('ethers');
+  const ROLE_SLOT = 4;
+  const targetsBase = keccak256(
+    concat([roleKey, zeroPadValue(toBeHex(ROLE_SLOT + 1), 32)]),
+  );
+  const found: string[] = [];
+  const missing: string[] = [];
+  for (const target of expectedTargets) {
+    const slot = keccak256(
+      concat([zeroPadValue(getAddress(target).toLowerCase(), 32), targetsBase]),
+    );
+    const raw = await provider.getStorage(rolesModifier, slot);
+    const value = BigInt(raw);
+    if (value !== 0n) {
+      found.push(target);
+    } else {
+      missing.push(target);
+    }
+  }
+  return { ok: missing.length === 0, missing, found };
+}
+
 /** Broadcast a roles-modifier execution and wait for confirmation. */
 export async function broadcastExecution(
   rolesModifier: string,
@@ -208,8 +250,24 @@ export async function processClientSafes(
       logger.debug(`batch: ${describeBatch(calls)}`);
 
       const encoded = encodeMultiSendBatch(calls);
-      const sim = await simulateExecution(client.rolesModifier, client.roleKey, encoded, provider);
-      if (!sim.ok) {
+
+      // Pre-flight: verify the role has the required targets configured on-chain.
+      const preflight = await checkRoleConfigured(
+        client.rolesModifier,
+        client.roleKey,
+        provider,
+        [MULTI_SEND_CALL_ONLY_ADDRESS, MERKLE_DROP_ADDRESS, SAFE_TOKEN_ADDRESS, STAKING_CONTRACT_ADDRESS],
+      );
+      if (!preflight.ok) {
+        logger.error(
+          `Role misconfigured for ${client.safe}: missing targets ${preflight.missing.join(', ')} ` +
+          `on rolesModifier ${client.rolesModifier}. Run setup-roles and execute the generated file on-chain.`,
+        );
+        outcomes.push({ status: 'failed', reason: `role misconfigured: missing ${preflight.missing.join(', ')}` });
+        continue;
+      }
+
+      const sim = await simulateExecution(client.rolesModifier, client.roleKey, encoded, wallet); if (!sim.ok) {
         logger.error(`Simulation failed for ${client.safe}: ${sim.reason}`);
         outcomes.push({ status: 'failed', reason: `simulation: ${sim.reason}` });
         continue;
@@ -291,9 +349,24 @@ export async function processOperatorSafe(
     );
     logger.debug(`batch: ${describeBatch(calls)}`);
 
-    // 6) Simulate, broadcast, await tx.wait(1).
+    // 6) Pre-flight: verify the role has the required targets configured on-chain.
+    const preflight = await checkRoleConfigured(
+      operator.rolesModifier,
+      operator.roleKey,
+      provider,
+      [MULTI_SEND_CALL_ONLY_ADDRESS, MERKLE_DROP_ADDRESS, SAFE_TOKEN_ADDRESS, STAKING_CONTRACT_ADDRESS],
+    );
+    if (!preflight.ok) {
+      logger.error(
+        `Role misconfigured for operator ${operator.safe}: missing targets ${preflight.missing.join(', ')} ` +
+        `on rolesModifier ${operator.rolesModifier}. Run setup-roles and execute the generated file on-chain.`,
+      );
+      return { status: 'failed', reason: `role misconfigured: missing ${preflight.missing.join(', ')}` };
+    }
+
+    // 7) Simulate, broadcast, await tx.wait(1).
     const encoded = encodeMultiSendBatch(calls);
-    const sim = await simulateExecution(operator.rolesModifier, operator.roleKey, encoded, provider);
+    const sim = await simulateExecution(operator.rolesModifier, operator.roleKey, encoded, wallet);
     if (!sim.ok) {
       logger.error(`Simulation failed for operator ${operator.safe}: ${sim.reason}`);
       return { status: 'failed', reason: `simulation: ${sim.reason}` };
