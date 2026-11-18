@@ -23,12 +23,20 @@ describe('multisend encoding', () => {
     expect(encoded.slice(172)).toBe('deadbeef');
   });
 
-  it('encodes a batch by concatenating sub-calls', () => {
-    const a = encodeMultiSendSubCall({ to: '0x' + '11'.repeat(20), value: 1n, data: '0xaa' });
-    const b = encodeMultiSendSubCall({ to: '0x' + '22'.repeat(20), value: 2n, data: '0xbb' });
-    expect(encodeMultiSendBatch([
+  it('wraps a batch in the full multiSend(bytes) calldata', () => {
+    const batch = encodeMultiSendBatch([
       { to: '0x' + '11'.repeat(20), value: 1n, data: '0xaa' },
       { to: '0x' + '22'.repeat(20), value: 2n, data: '0xbb' },
-    ])).toBe(a + b.slice(2));
+    ]);
+    // selector multiSend(bytes) == 0x8d80ff0a, then offset 0x20, then length, then packed
+    expect(batch.slice(0, 10)).toBe('0x8d80ff0a');
+    expect(batch.slice(10, 74)).toBe('00'.repeat(31) + '20'); // offset = 32
+    const packedLen = 2 * (1 + 20 + 32 + 32 + 1); // 172 bytes
+    expect(batch.slice(74, 138)).toBe('00'.repeat(31) + packedLen.toString(16).padStart(2, '0'));
+    // packed sub-calls follow, ABI-padded to a multiple of 32 (172 -> 192)
+    const packed = '00' + '11'.repeat(20) + '00'.repeat(31) + '01' + '00'.repeat(31) + '01' + 'aa'
+      + '00' + '22'.repeat(20) + '00'.repeat(31) + '02' + '00'.repeat(31) + '01' + 'bb'
+      + '00'.repeat(192 - packedLen);
+    expect(batch.slice(138)).toBe(packed);
   });
 });

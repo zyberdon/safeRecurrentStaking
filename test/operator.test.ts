@@ -40,7 +40,8 @@ describe('checkRoleConfigured', () => {
       '0x1111111111111111111111111111111111111111',
       '0x' + '11'.repeat(32),
       provider,
-      ['0x40A2aCCbd92BCA938b02010E17A5b8929b49130D', '0xe5139Fc0FB8eae81e30d8a85C22E88c6757120f2'],
+      ['0x40A2aCCbd92BCA938b02010E17A5b8929b49130D'],
+      [{ target: '0xe5139Fc0FB8eae81e30d8a85C22E88c6757120f2', selector: '0x1d7d4ebc' }],
     );
     expect(r.ok).toBe(false);
     expect(r.missing).toHaveLength(2);
@@ -56,6 +57,7 @@ describe('checkRoleConfigured', () => {
       '0x' + '11'.repeat(32),
       provider,
       ['0x40A2aCCbd92BCA938b02010E17A5b8929b49130D'],
+      [],
     );
     expect(r.ok).toBe(true);
     expect(r.found).toHaveLength(1);

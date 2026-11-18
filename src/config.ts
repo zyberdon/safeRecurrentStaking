@@ -27,6 +27,8 @@ export interface AppConfig {
   operatorSafe: OperatorSafeConfig;
   maxGasPriceGwei: number;
   dryRun: boolean;
+  /** Optional override for the proof gateway base URL (default: eth.limo ENS gateway). */
+  proofGatewayUrl?: string;
 }
 
 export class ConfigError extends Error {
@@ -189,6 +191,10 @@ export function loadConfig(
     operatorSafe: parseOperatorSafe(requireEnv('OPERATOR_SAFE_JSON')),
     maxGasPriceGwei: parseMaxGasPrice(env.MAX_GAS_PRICE_GWEI),
     dryRun: parseDryRun(env.DRY_RUN),
+    proofGatewayUrl:
+      env.PROOF_GATEWAY_URL !== undefined && env.PROOF_GATEWAY_URL.trim() !== ''
+        ? env.PROOF_GATEWAY_URL.trim()
+        : undefined,
   };
 }
 

@@ -59,6 +59,7 @@ export type EnableModuleMode = 'always' | 'skip' | 'auto';
 const ROLES_IFACE = new Interface([
   'function enableModule(address module)',
   'function allowTarget(bytes32 roleKey, address targetAddress, uint8 options)',
+  'function scopeTarget(bytes32 roleKey, address targetAddress)',
   'function scopeFunction(bytes32 roleKey, address targetAddress, bytes4 selector, tuple(uint8 parent, uint8 paramType, uint8 operator, bytes compValue)[] conditions, uint8 options)',
   'function assignRoles(address module, bytes32[] roleKeys, bool[] memberOf)',
   'function setTransactionUnwrapper(address to, bytes4 selector, address adapter)',
@@ -176,6 +177,15 @@ export async function buildRoleCalls(
         ]),
       });
     } else {
+      // Function-level (clearance === 2): scopeTarget(...) sets the target's
+      // clearance to Function; scopeFunction(...) then records the per-selector
+      // conditions. Both are required — without scopeTarget, _transaction sees
+      // clearance 0 and never consults scopeConfig (ConditionViolation(2)).
+      calls.push({
+        to: rolesModifier,
+        value: '0',
+        data: ROLES_IFACE.encodeFunctionData('scopeTarget', [roleKey, target.address]),
+      });
       for (const fn of target.functions) {
         const conditions = fn.condition ? flattenCondition(fn.condition) : [];
         calls.push({

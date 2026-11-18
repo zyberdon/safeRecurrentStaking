@@ -134,9 +134,12 @@ export async function simulateExecution(
   roleKey: string,
   encodedMultiSend: string,
   provider: JsonRpcProvider,
+  executorAddress: string,
 ): Promise<{ ok: boolean; reason?: string }> {
   const roles = new Contract(rolesModifier, ROLES_MODIFIER_ABI, provider);
   try {
+    // staticCall with `from: executorAddress` so the Roles modifier sees
+    // msg.sender = executor EOA (module), exactly like the real broadcast.
     await roles.execTransactionWithRole!.staticCall(
       MULTI_SEND_CALL_ONLY_ADDRESS,
       0n,
@@ -144,6 +147,7 @@ export async function simulateExecution(
       OPERATION_DELEGATE_CALL,
       roleKey,
       true,
+      { from: executorAddress },
     );
     return { ok: true };
   } catch (err) {
@@ -170,25 +174,47 @@ export async function checkRoleConfigured(
   roleKey: string,
   provider: JsonRpcProvider,
   expectedTargets: string[],
+  expectedFunctions: Array<{ target: string; selector: string }>,
 ): Promise<{ ok: boolean; missing: string[]; found: string[] }> {
   const { keccak256, concat, toBeHex, zeroPadValue, getAddress } = await import('ethers');
+  // v2 Roles storage: roles mapping at slot 4 (Modifier base = avatar slot0, target slot1,
+  // consumed mapping slot2, modules mapping slot3, owner slot4... wait — slot 4 is owner.
+  // Empirically, the roles mapping is at slot 4 (member writes landed there on mainnet).
   const ROLE_SLOT = 4;
-  const targetsBase = keccak256(
-    concat([roleKey, zeroPadValue(toBeHex(ROLE_SLOT + 1), 32)]),
+  // roles[roleKey] struct base
+  const structBase = BigInt(
+    keccak256(concat([roleKey, zeroPadValue(toBeHex(ROLE_SLOT), 32)])),
   );
+  // .targets is slot 1 of the struct: mapping base = structBase + 1
+  const targetsMapBase = (structBase + 1n).toString(16).padStart(64, '0');
+  // .scopeConfig is slot 2 of the struct: mapping base = structBase + 2
+  const scopeMapBase = (structBase + 2n).toString(16).padStart(64, '0');
+
   const found: string[] = [];
   const missing: string[] = [];
+
   for (const target of expectedTargets) {
     const slot = keccak256(
-      concat([zeroPadValue(getAddress(target).toLowerCase(), 32), targetsBase]),
+      concat([zeroPadValue(getAddress(target).toLowerCase(), 32), '0x' + targetsMapBase]),
     );
     const raw = await provider.getStorage(rolesModifier, slot);
-    const value = BigInt(raw);
-    if (value !== 0n) {
-      found.push(target);
-    } else {
-      missing.push(target);
-    }
+    if (BigInt(raw) !== 0n) found.push(target);
+    else missing.push(target);
+  }
+  for (const fn of expectedFunctions) {
+    // _key(target, selector) = bytes32(bytes20(target)) | (bytes32(selector) >> 160)
+    // = target << 96 | selector << 64
+    const packedKey =
+      (BigInt('0x' + getAddress(fn.target).toLowerCase().slice(2)) << 96n) |
+      (BigInt(fn.selector) << 64n);
+    const keyHex = '0x' + packedKey.toString(16).padStart(64, '0');
+    const slot = keccak256(
+      concat([keyHex, '0x' + scopeMapBase]),
+    );
+    const raw = await provider.getStorage(rolesModifier, slot);
+    const label = `${fn.target.slice(0, 8)}:${fn.selector}`;
+    if (BigInt(raw) !== 0n) found.push(label);
+    else missing.push(label);
   }
   return { ok: missing.length === 0, missing, found };
 }
@@ -226,12 +252,17 @@ export async function processClientSafes(
   wallet: Wallet,
   dryRun: boolean,
   overrideFeeBps?: number,
+  proofGatewayUrl?: string,
 ): Promise<SafeOutcome[]> {
   const outcomes: SafeOutcome[] = [];
   for (const client of clients) {
     logger.info(`=== Phase 1: client Safe ${client.safe} ===`);
     try {
-      const verified = await verifyProofForSafe(client.safe, provider, fetchRewardProof);
+      const verified = await verifyProofForSafe(
+        client.safe,
+        provider,
+        (safe, opts) => fetchRewardProof(safe, { ...opts, gatewayUrl: proofGatewayUrl }),
+      );
       if (!verified) {
         logger.info(`Dormant: no rewards proof published yet for ${client.safe}`);
         outcomes.push({ status: 'dormant', reason: 'no proof published' });
@@ -256,7 +287,13 @@ export async function processClientSafes(
         client.rolesModifier,
         client.roleKey,
         provider,
-        [MULTI_SEND_CALL_ONLY_ADDRESS, MERKLE_DROP_ADDRESS, SAFE_TOKEN_ADDRESS, STAKING_CONTRACT_ADDRESS],
+        [MULTI_SEND_CALL_ONLY_ADDRESS],
+        [
+          { target: MERKLE_DROP_ADDRESS, selector: '0x1d7d4ebc' }, // claim
+          { target: SAFE_TOKEN_ADDRESS, selector: '0xa9059cbb' }, // transfer
+          { target: SAFE_TOKEN_ADDRESS, selector: '0x095ea7b3' }, // approve
+          { target: STAKING_CONTRACT_ADDRESS, selector: '0xadc9772e' }, // stake
+        ],
       );
       if (!preflight.ok) {
         logger.error(
@@ -267,7 +304,7 @@ export async function processClientSafes(
         continue;
       }
 
-      const sim = await simulateExecution(client.rolesModifier, client.roleKey, encoded, provider);
+      const sim = await simulateExecution(client.rolesModifier, client.roleKey, encoded, provider, wallet.address);
       if (!sim.ok) {
         logger.error(`Simulation failed for ${client.safe}: ${sim.reason}`);
         outcomes.push({ status: 'failed', reason: `simulation: ${sim.reason}` });
@@ -294,6 +331,7 @@ export async function processOperatorSafe(
   provider: JsonRpcProvider,
   wallet: Wallet,
   dryRun: boolean,
+  proofGatewayUrl?: string,
 ): Promise<OperatorOutcome> {
   logger.info(`=== Phase 2: operator Safe ${operator.safe} (strictly last) ===`);
   try {
@@ -304,7 +342,7 @@ export async function processOperatorSafe(
     const [onChainRoot, alreadyClaimed, proof] = await Promise.all([
       drop.merkleRoot!(),
       drop.cumulativeClaimed!(operator.safe),
-      fetchRewardProof(operator.safe, { provider }).catch(() => null),
+      fetchRewardProof(operator.safe, { provider, gatewayUrl: proofGatewayUrl }).catch(() => null),
     ]);
     let operatorUnclaimedDelta = 0n;
     let claimCall: MultiSendSubCall | null = null;
@@ -355,7 +393,12 @@ export async function processOperatorSafe(
       operator.rolesModifier,
       operator.roleKey,
       provider,
-      [MULTI_SEND_CALL_ONLY_ADDRESS, MERKLE_DROP_ADDRESS, SAFE_TOKEN_ADDRESS, STAKING_CONTRACT_ADDRESS],
+      [MULTI_SEND_CALL_ONLY_ADDRESS],
+      [
+        { target: MERKLE_DROP_ADDRESS, selector: '0x1d7d4ebc' }, // claim
+        { target: SAFE_TOKEN_ADDRESS, selector: '0x095ea7b3' }, // approve
+        { target: STAKING_CONTRACT_ADDRESS, selector: '0xadc9772e' }, // stake
+      ],
     );
     if (!preflight.ok) {
       logger.error(
@@ -367,7 +410,7 @@ export async function processOperatorSafe(
 
     // 7) Simulate, broadcast, await tx.wait(1).
     const encoded = encodeMultiSendBatch(calls);
-    const sim = await simulateExecution(operator.rolesModifier, operator.roleKey, encoded, provider);
+    const sim = await simulateExecution(operator.rolesModifier, operator.roleKey, encoded, provider, wallet.address);
     if (!sim.ok) {
       logger.error(`Simulation failed for operator ${operator.safe}: ${sim.reason}`);
       return { status: 'failed', reason: `simulation: ${sim.reason}` };
@@ -419,17 +462,26 @@ export async function main(): Promise<void> {
     wallet,
     config.dryRun,
     config.overrideFeeBps,
+    config.proofGatewayUrl,
   );
 
   // Phase 2: operator Safe strictly last.
-  const operatorOutcome = await processOperatorSafe(config.operatorSafe, provider, wallet, config.dryRun);
+  const operatorOutcome = await processOperatorSafe(
+    config.operatorSafe,
+    provider,
+    wallet,
+    config.dryRun,
+    config.proofGatewayUrl,
+  );
 
   // Summary.
+  const stringify = (o: unknown): string =>
+    JSON.stringify(o, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
   logger.info('=== Summary ===');
   for (const [i, o] of clientOutcomes.entries()) {
-    logger.info(`Client ${config.clientSafes[i]?.safe}: ${JSON.stringify(o)}`);
+    logger.info(`Client ${config.clientSafes[i]?.safe}: ${stringify(o)}`);
   }
-  logger.info(`Operator ${config.operatorSafe.safe}: ${JSON.stringify(operatorOutcome)}`);
+  logger.info(`Operator ${config.operatorSafe.safe}: ${stringify(operatorOutcome)}`);
 
   // GitHub Actions step summary (Markdown table).
   writeStepSummary(config, clientOutcomes, operatorOutcome);
