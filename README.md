@@ -111,6 +111,8 @@ Import each generated JSON into the [Safe Transaction Builder](https://app.safe.
 
 > **MultiSend unwrapping & delegatecall:** the generated setup registers the official Roles `MultiSendUnwrapper` (`setTransactionUnwrapper(MultiSendCallOnly, 0x8d80ff0a, 0xB4Cd4bb764C089f20DA18700CE8bc5e49F369efD)`) and grants `MultiSendCallOnly` via `allowTarget(..., options=2 /* DelegateCall */)`. The sweep executes the MultiSend batch through `execTransactionWithRole(..., OPERATION_DELEGATE_CALL)` so the Roles modifier unwraps the batch and checks permissions on each inner `{claim, transfer, approve, stake}` call instead of treating the blob as a black box.
 
+> **`scopeTarget` before `scopeFunction`:** for every function-scoped target, `setup-roles.ts` emits a `scopeTarget(roleKey, target)` call **before** the matching `scopeFunction(...)`. Zodiac Roles v2 only consults `scopeConfig[key]` when `targets[addr].clearance == Function (2)`; `scopeFunction` alone writes the conditions but never sets the clearance, so without `scopeTarget` the modifier reverts with `ConditionViolation(2)` (`FunctionNotAllowed`). Both calls are required and are emitted in the same batch.
+
 ## Setup
 
 ### 1. Prerequisites
@@ -137,7 +139,6 @@ cp .env.example .env
 | `MAX_GAS_PRICE_GWEI` | Max gas price in gwei; run aborts above this (default `35`) |
 | `DRY_RUN` | `true` = simulate only, broadcast nothing (default `true`) |
 | `PROOF_GATEWAY_URL` | Primary ENS gateway (default `https://rewards.safenet-gov.eth.limo`) |
-| `IPFS_GATEWAYS` | JSON array of fallback IPFS gateways |
 | `LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error` |
 
 ```jsonc
@@ -170,29 +171,63 @@ DRY_RUN=true node dist/index.js   # simulate only
 DRY_RUN=false node dist/index.js  # broadcast
 ```
 
+For a production-style local loop that mimics the GitHub Actions schedule (hourly, `DRY_RUN=false`) until you press `Ctrl+C`, use the bundled runner:
+
+```bash
+./run-local.sh            # hourly loop, DRY_RUN=false (production)
+./run-local.sh --dry-run  # hourly loop, DRY_RUN=true (safe)
+./run-local.sh --once     # run a single sweep and exit
+./run-local.sh --interval 300   # custom interval in seconds (default 3600)
+```
+
+`run-local.sh` reads the same `.env` file as the app and requires `dist/` to be built (`npm run build`).
+
+### 3b. Local mainnet fork verification (zero gas)
+
+Before executing anything on live mainnet, you can verify the **Zodiac Roles JSON configurations** and the **full rewards sweep** end-to-end against a local `anvil` fork of Ethereum mainnet — with zero real gas. Requires [Foundry](https://getfoundry.sh) (`anvil`).
+
+```bash
+node scripts/verify-local-fork.mjs      # operator sweep on an anvil mainnet fork
+node scripts/verify-client-fork.mjs     # client fee-split path (synthetic proof, fork-only)
+```
+
+- **`verify-local-fork.mjs`** — starts `anvil --fork-url $RPC_URL` on `127.0.0.1:8545`, impersonates + funds the operator Safe, client Safe, and executor EOA, replays every transaction from `roles/roles-operator-*.json` and `roles/roles-client-*.json` against their respective Roles Modifier proxies, then runs the real sweep (`dist/index.js`) with `DRY_RUN=false` pointed at the fork. It verifies on-chain that the operator Safe's staked balance increased by exactly the unclaimed amount and shuts `anvil` down cleanly.
+- **`verify-client-fork.mjs`** — exercises the **client fee-split path** (which is dormant on mainnet because the client has no published proof). It injects a cryptographically-valid 2-leaf Merkle tree for the client on the fork, funds the drop's SAFE balance, serves the client proof from a local gateway (`PROOF_GATEWAY_URL`), and runs the real sweep. It verifies the fee/restake split on-chain: the fee amount routed to the operator Safe and the restake amount staked by the client Safe, with the operator phase running strictly last and staking 100% of its liquid balance.
+
+Both scripts are read-only against live mainnet (they only fork it) and execute all transactions on the local fork, so nothing is broadcast to mainnet.
+
 ### 4. GitHub Actions
 
-Add the following **repository secrets** (Settings → Secrets and variables → Actions):
+The workflow (`.github/workflows/weekly-reward-sweep.yml`) reads configuration from two places: **repository variables** (`vars.*`, unmasked in logs) and **repository secrets** (`secrets.*`, masked). Set them under Settings → Secrets and variables → Actions.
+
+**Repository Variables (`vars.*`):**
+
+| Variable | Value |
+|---|---|
+| `RPC_URL` | Mainnet RPC URL |
+| `CLIENT_SAFES_JSON` | JSON array (single line) |
+| `OPERATOR_SAFE_JSON` | JSON object (single line) |
+
+> **Security note:** variables are **unmasked** in workflow logs. If your `RPC_URL` embeds a private API key (e.g. `https://key@provider.io/...`), prefer a key-less or IP-restricted endpoint, or move `RPC_URL` to a secret instead.
+
+**Repository Secrets (`secrets.*`):**
 
 | Secret | Value |
 |---|---|
-| `RPC_URL` | Mainnet RPC URL |
 | `EXECUTOR_PRIVATE_KEY` | Gas-only EOA private key |
 | `DEFAULT_FEE_BPS` | e.g. `2500` |
-| `CLIENT_SAFES_JSON` | JSON array (single line) |
-| `OPERATOR_SAFE_JSON` | JSON object (single line) |
 | `MAX_GAS_PRICE_GWEI` | e.g. `35` |
 | `DRY_RUN` | `true` or `false` |
 | `OVERRIDE_FEE_BPS` | optional; global fee override for manual testing |
 
-The workflow (`.github/workflows/weekly-sweep.yml`):
+The workflow:
 
-- Runs **every hour on every Tuesday UTC** (`cron: '0 * * * 2'`). The run is idempotent — when all Safes are dormant it exits in ~3 seconds with 0 gas.
-- Supports `workflow_dispatch` with optional `dry_run` and `override_fee_bps` inputs for manual testing.
+- Runs **every hour on Tuesdays and Wednesdays UTC** (`cron: '11 * * * 2,3'`, offset from the top of the hour). The run is idempotent — when all Safes are dormant it exits in ~3 seconds with 0 gas.
+- Supports `workflow_dispatch` with optional `dry_run` and `override_fee_bps` inputs for manual testing. `dry_run` overrides the `DRY_RUN` secret when provided; otherwise the secret value is used.
 - Uses `concurrency` group `safenet-reward-compounder` with `cancel-in-progress: false` (no overlapping runs).
-- Installs, type-checks, tests, builds, runs the automation with secrets injected.
+- Installs, type-checks, tests, builds, runs the automation with secrets/variables injected.
 - Writes a **Markdown table to `$GITHUB_STEP_SUMMARY`** showing per-Safe: Claimed SAFE, Fee Sent to Operator, Restaked SAFE, Tx Hash, and Status (`EXECUTED` vs `DORMANT`).
-- Runs a **parity guard** (`src/parity-check.ts`) that verifies `cumulativeClaimed(safe) == proof.cumulativeAmount` for every client Safe and that the operator Safe's liquid SAFE balance is `0` — failing the run if on-chain state doesn't match expectations.
+- Runs a **parity guard** (`src/parity-check.ts`) in a separate step gated by `if: success()` — it only runs when the sweep step succeeded. The guard is **read-only**: it verifies `cumulativeClaimed(safe) == proof.cumulativeAmount` for every client Safe and that the operator Safe's liquid SAFE balance is `0`, failing the run if on-chain state doesn't match expectations. Because it never signs, it runs with `skipExecutorKey` and does **not** require `EXECUTOR_PRIVATE_KEY` (the workflow only injects `RPC_URL`, `CLIENT_SAFES_JSON`, and `OPERATOR_SAFE_JSON` for that step).
 
 ## Safety properties
 
@@ -200,7 +235,7 @@ The workflow (`.github/workflows/weekly-sweep.yml`):
 - **Local Merkle verification:** a claim is never broadcast unless the proof verifies against the on-chain root.
 - **Simulation before broadcast:** every batch is `staticCall`-simulated through the Roles Modifier; failures are logged and skipped, never broadcast.
 - **Gas price guard:** the run aborts before sending anything if `maxFeePerGas` exceeds `MAX_GAS_PRICE_GWEI`.
-- **MultiSendCallOnly:** only operation 0 (call) is supported by the contract — no delegateCall is possible.
+- **MultiSendCallOnly:** the Safe `delegatecall`s `MultiSendCallOnly` via `execTransactionWithRole(..., OPERATION_DELEGATE_CALL)` (enforced by the Roles `MultiSendUnwrapper`, which requires `operation == DelegateCall`). Inside the batch, `MultiSendCallOnly` itself restricts every **inner** sub-call to `operation 0` (`call`) — nested `delegatecall`s inside the batch revert, so the batch can only ever perform plain calls to the scoped contracts.
 - **Dry-run default:** `DRY_RUN` defaults to `true`; flip it only after a successful dry run.
 
 ## Development
